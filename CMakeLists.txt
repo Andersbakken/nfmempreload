@@ -1,3 +1,6 @@
 cmake_minimum_required(VERSION 2.8)
 include_directories(${CMAKE_CURRENT_LIST_DIR})
-add_executable(nfmempreload nfmempreload.cpp)
+add_library(nfmempreload SHARED nfmempreload.cpp)
+target_link_libraries(nfmempreload dl pthread)
+add_executable(test main.cpp)
+target_link_libraries(test dl)
