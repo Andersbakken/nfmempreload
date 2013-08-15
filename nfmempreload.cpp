@@ -24,9 +24,12 @@ static Node sNodes[1024 * 1024];
 static size_t sSize = 0;
 static size_t sCount = 0;
 static int sFirst = -1;
+static bool sEnable = true;
 
 static void add(void *ptr, size_t size)
 {
+    if (!sEnable)
+        return;
     sSize += size;
     ++sCount;
     if (sFirst == -1) {
@@ -60,6 +63,8 @@ static void add(void *ptr, size_t size)
 
 static void remove(void *ptr)
 {
+    if (!sEnable)
+        return;
     int idx = sFirst;
     int prev = -1;
     --sCount;
@@ -142,6 +147,7 @@ void free(void *ptr)
 void dumpAllocations()
 {
     Scope scope;
+    sEnable = false;
     printf("MALLOC: %u in %u allocations\n", sSize, sCount);
     int idx = sFirst;
     int i = 0;
@@ -153,5 +159,7 @@ void dumpAllocations()
         idx = node.next;
     }
     assert(total == sSize);
+    sEnable = true;
+
 }
 }

@@ -7,7 +7,7 @@ int main(int argc, char **argv)
     foo = realloc(foo, 30);
     typedef void (*DumpAllocations)();
     DumpAllocations dumpAllocations = reinterpret_cast<DumpAllocations>(dlsym(RTLD_NEXT, "dumpAllocations"));
-    for (int i=0; i<100; ++i) {
+    for (int i=0; i<10000; ++i) {
         void *foo = 0;
         foo = realloc(foo, i + 1);
     }
