@@ -1,13 +1,9 @@
 #include <stdio.h>
-#include <map>
-#include <string>
+#include <pthread.h>
 #include <assert.h>
 #include <dlfcn.h>
 
-static std::map<void*, size_t> sAllocations;
-static size_t sCurrent = 0;
 static pthread_mutex_t sMutex;
-static int sLevel = 0;
 typedef void * (*OriginalMalloc)(size_t);
 OriginalMalloc originalMalloc;
 typedef void * (*OriginalRealloc)(void *, size_t);
@@ -24,31 +20,34 @@ struct Node {
     int next, prev;
 };
 
-static Node nodes[1024 * 1024];
-static int first = -1;
+static Node sNodes[1024 * 1024];
+static size_t sSize = 0;
+static size_t sCount = 0;
+static int sFirst = -1;
 
 static void add(void *ptr, size_t size)
 {
-    sCurrent += size;
-    if (first == -1) {
-        first = 0;
-        nodes[0].pointer = ptr;
-        nodes[0].size = size;
+    sSize += size;
+    ++sCount;
+    if (sFirst == -1) {
+        sFirst = 0;
+        sNodes[0].pointer = ptr;
+        sNodes[0].size = size;
     } else {
-        int idx = first;
+        int idx = sFirst;
         int prev = -1;
         while (true) {
-            Node &node = nodes[idx];
+            Node &node = sNodes[idx];
             assert(node.pointer);
             if (node.next != -1) {
                 prev = idx;
                 idx = node.next;
             } else {
-                for (size_t i=0; i<sizeof(nodes) / sizeof(nodes[0]); ++i) {
-                    if (!nodes[i].pointer) {
-                        nodes[i].pointer = ptr;
-                        nodes[i].size = size;
-                        nodes[i].prev = prev;
+                for (size_t i=0; i<sizeof(sNodes) / sizeof(sNodes[0]); ++i) {
+                    if (!sNodes[i].pointer) {
+                        sNodes[i].pointer = ptr;
+                        sNodes[i].size = size;
+                        sNodes[i].prev = prev;
                         node.next = i;
                         break;
                     }
@@ -59,25 +58,28 @@ static void add(void *ptr, size_t size)
     }
 }
 
-static size_t remove(void *ptr)
+static void remove(void *ptr)
 {
-    int idx = first;
+    int idx = sFirst;
     int prev = -1;
+    --sCount;
     while (true) {
-        Node &node = nodes[idx];
+        Node &node = sNodes[idx];
         assert(node.pointer);
         if (node.pointer == ptr) {
+            sSize -= node.size;
             if (prev == -1) {
-                first = node.next;
+                sFirst = node.next;
             } else {
-                Node &prevNode = nodes[prev];
+                Node &prevNode = sNodes[prev];
                 prevNode.next = node.next;
             }
             if (node.next != -1) {
-                Node &next = nodes[node.next];
+                Node &next = sNodes[node.next];
                 next.prev = node.prev;
             }
             node.clear();
+            break;
         }
     }
 }
@@ -101,19 +103,11 @@ public:
         }
         pthread_mutex_unlock(&sControlMutex);
         pthread_mutex_lock(&sMutex);
-        ++sLevel;
     }
 
     ~Scope()
     {
-        --sLevel;
         pthread_mutex_unlock(&sMutex);
-    }
-
-    bool isReentrant() const
-    {
-        assert(sLevel > 0);
-        return sLevel > 1;
     }
 };
 
@@ -121,84 +115,43 @@ extern "C" {
 void *malloc(size_t size)
 {
     Scope scope;
-    if (scope.isReentrant()) {
-        void *ret = originalMalloc(size);
-        assert(ret);
-        return ret;
-    }
     void *ret = originalMalloc(size);
-    if (ret) {
-        // assert(sAllocations.find(ret) == sAllocations.end());
-        // sAllocations[ret] = size;
-        // sCurrent += size;
-    }
-    assert(ret);
+    if (ret)
+        add(ret, size);
     return ret;
 }
 
 void *realloc(void *ptr, size_t size)
 {
     Scope scope;
-    if (scope.isReentrant()) {
-        void *ret = originalRealloc(ptr, size);
-        assert(ret);
-        return ret;
-    }
-    if (ptr) {
-        // std::map<void*, size_t>::iterator it = sAllocations.find(ptr);
-        // assert(it != sAllocations.end());
-        // sCurrent -= it->second;
-        // sAllocations.erase(it);
-    }
-
-    // assert(sAllocations.find(ptr) == sAllocations.end());
-    void *ret = originalRealloc(ptr, size);
-    if (ret) {
-        // assert(sAllocations.find(ret) == sAllocations.end());
-        // sAllocations[ret] = size;
-        // sCurrent += size;
-    }
-    assert(ret);
-    return ret;
+    if (ptr)
+        remove(ptr);
+    ptr = originalRealloc(ptr, size);
+    add(ptr, size);
+    return ptr;
 }
 
 void free(void *ptr)
 {
     Scope scope;
-    if (scope.isReentrant()) {
-        originalFree(ptr);
-        return;
-    }
-    // assert(ptr);
-    if (ptr) {
-        // std::map<void*, size_t>::iterator it = sAllocations.find(ptr);
-        // assert(it != sAllocations.end());
-        // sCurrent -= it->second;
-        // sAllocations.erase(it);
-    }
+    if (ptr)
+        remove(ptr);
     originalFree(ptr);
 }
 
 void dumpAllocations()
 {
     Scope scope;
-    assert(!scope.isReentrant());
-    // size_t current;
-    // {
-    //     Scope scope;
-    //     // ++sLevel;
-    //     allocations = sAllocations;
-    //     current = sCurrent;
-    //     // --sLevel;
-    // }
-
-    printf("MALLOC: %u in %u allocations\n", sCurrent, sAllocations.size());
-    int idx = 0;
+    printf("MALLOC: %u in %u allocations\n", sSize, sCount);
+    int idx = sFirst;
+    int i = 0;
     size_t total = 0;
-    for (std::map<void*, size_t>::const_iterator it = sAllocations.begin(); it != sAllocations.end(); ++it) {
-        printf("  %d/%u: %p %d bytes\n", ++idx, sAllocations.size(), it->first, it->second);
-        total += it->second;
+    while (idx != -1) {
+        const Node &node = sNodes[idx];
+        printf("  %d/%u: %p %d bytes\n", ++i, sCount, node.pointer, node.size);
+        total += node.size;
+        idx = node.next;
     }
-    assert(total == sCurrent);
+    assert(total == sSize);
 }
 }

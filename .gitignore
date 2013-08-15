@@ -1,0 +1,9 @@
+/CMakeCache.txt
+/core
+/libnfmempreload.so
+/cmake_install.cmake
+/test
+/CMakeFiles/*
+/.gdb_brestore
+/.gdb_brestore.txt
+/.gdb_history
