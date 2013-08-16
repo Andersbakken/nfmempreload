@@ -1,6 +1,8 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 
+static void *foo = malloc(123123);
+
 int main(int argc, char **argv)
 {
     void *foo = malloc(20);
