@@ -7,3 +7,6 @@
 /.gdb_brestore
 /.gdb_brestore.txt
 /.gdb_history
+/.ninja_log
+/build.ninja
+/rules.ninja
