@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <assert.h>
 #include <dlfcn.h>
+#include <map>
 
 static pthread_mutex_t sMutex;
 typedef void * (*OriginalMalloc)(size_t);
@@ -25,71 +26,45 @@ OriginalFree sOriginalFree = reinterpret_cast<OriginalFree>(dlsym(RTLD_NEXT, "fr
 static size_t sSize = 0;
 // static size_t sCount = 0;
 // static int sFirst = -1;
+struct Entry {
+    Entry() : size(0), time(0) {}
+    size_t size;
+    enum { Stacksize = 32 };
+    void *stack[Stacksize];
+    time_t time;
+};
 static bool sEnable = true;
-static bool sStart = true;
-
-static std::map<void*, size_t> sMap;
+static std::map<void*, Entry> *sMap = 0;
 static void add(void *ptr, size_t size)
 {
     if (!sEnable)
         return;
+    sEnable = false;
+    if (!sMap)
+        sMap = new std::map<void*, Entry>();
     sSize += size;
-    ++sCount;
-    if (sFirst == -1) {
-        sFirst = 0;
-        sNodes[0].pointer = ptr;
-        sNodes[0].size = size;
-    } else {
-        int idx = sFirst;
-        int prev = -1;
-        while (true) {
-            Node &node = sNodes[idx];
-            assert(node.pointer);
-            if (node.next != -1) {
-                prev = idx;
-                idx = node.next;
-            } else {
-                for (size_t i=0; i<sizeof(sNodes) / sizeof(sNodes[0]); ++i) {
-                    if (!sNodes[i].pointer) {
-                        sNodes[i].pointer = ptr;
-                        sNodes[i].size = size;
-                        sNodes[i].prev = prev;
-                        node.next = i;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-    }
+    Entry &entry = (*sMap)[ptr];
+    entry.size = size;
+    ret->mSize = ::backtrace(ret->mStack, MAX_STACK_SIZE);
+
+    entry.add
+    sEnable = true;
 }
 
 static void remove(void *ptr)
 {
     if (!sEnable)
         return;
-    int idx = sFirst;
-    int prev = -1;
-    --sCount;
-    while (true) {
-        Node &node = sNodes[idx];
-        assert(node.pointer);
-        if (node.pointer == ptr) {
-            sSize -= node.size;
-            if (prev == -1) {
-                sFirst = node.next;
-            } else {
-                Node &prevNode = sNodes[prev];
-                prevNode.next = node.next;
-            }
-            if (node.next != -1) {
-                Node &next = sNodes[node.next];
-                next.prev = node.prev;
-            }
-            node.clear();
-            break;
-        }
+    sEnable = false;
+    if (!sMap)
+        sMap = new std::map<void*, size_t>();
+    std::map<void*, size_t>::iterator it = sMap->find(ptr);
+    if (it != sMap->end()) {
+        // assert(it != sMap->end());
+        --sSize -= it->second;
+        sMap->erase(it);
     }
+    sEnable = true;
 }
 
 class Scope
@@ -99,8 +74,7 @@ public:
     {
         static pthread_mutex_t sControlMutex = PTHREAD_MUTEX_INITIALIZER;
         pthread_mutex_lock(&sControlMutex);
-        if (sStart) {
-            sStart = false;
+        if (!sMap) {
             pthread_mutexattr_t attr;
             pthread_mutexattr_init(&attr);
             pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -115,10 +89,6 @@ public:
             sOriginalRealloc = reinterpret_cast<OriginalRealloc>(dlsym(RTLD_NEXT, "realloc"));
         if (!sOriginalFree)
             sOriginalFree = reinterpret_cast<OriginalFree>(dlsym(RTLD_NEXT, "free"));
-        if (!sNodes) {
-            sNodes = reinterpret_cast<Node*>(0x1);
-            sNodes = new Node[NodeCount];
-        }
         pthread_mutex_lock(&sMutex);
     }
 
@@ -150,28 +120,36 @@ void *realloc(void *ptr, size_t size)
 
 void free(void *ptr)
 {
-    Scope scope;
-    if (ptr)
-        remove(ptr);
-    sOriginalFree(ptr);
+    if (ptr) {
+        Scope scope;
+        if (ptr)
+            remove(ptr);
+        sOriginalFree(ptr);
+    }
 }
 
-void dumpAllocations()
+void dumpAllocations(const char *file)
 {
+    FILE *f = fopen(file, "w");
     Scope scope;
     sEnable = false;
-    printf("MALLOC: %u in %u allocations\n", sSize, sCount);
-    int idx = sFirst;
     int i = 0;
     size_t total = 0;
-    while (idx != -1) {
-        const Node &node = sNodes[idx];
-        printf("  %d/%u: %p %d bytes\n", ++i, sCount, node.pointer, node.size);
-        total += node.size;
-        idx = node.next;
+    for (std::map<void*, size_t>::const_iterator it = sMap->begin(); it != sMap->end(); ++it) {
+        printf("  %d/%u: %p %d bytes\n", ++i, sMap->size(), it->first, it->second);
+        total += it->second;
     }
-    assert(total == sSize);
+    printf("MALLOC: %u in %u allocations\n", sSize, sMap->size());
+    // if (total != sSize) {
+    //     printf("%d vs %d\n", total, sSize);
+    // }
+    // assert(total == sSize);
     sEnable = true;
+}
 
+size_t totalAllocations()
+{
+    Scope scope;
+    return sSize;
 }
 }
