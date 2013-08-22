@@ -111,7 +111,7 @@ void *malloc(size_t size)
         sEnable = false;
         time_t time;
         FILE *f = file(time);
-        fprintf(f, "%ld malloc %p %d ", time, ret, size);
+        fprintf(f, "%ld malloc %p %d ", time, ret, static_cast<int>(size));
         DUMP_STACK();
         sEnable = true;
     }
@@ -126,7 +126,11 @@ void *realloc(void *ptr, size_t size)
         sEnable = false;
         time_t time;
         FILE *f = file(time);
-        fprintf(f, "%ld realloc 0x%x => %p %d ", time, reinterpret_cast<unsigned int>(ptr), ret, size);
+        if (ptr) {
+            fprintf(f, "%ld realloc %p => %p %d ", time, ptr, ret, static_cast<int>(size));
+        } else {
+            fprintf(f, "%ld realloc 0x0 => %p %d ", time, ret, static_cast<int>(size));
+        }
         DUMP_STACK();
         sEnable = true;
     }
