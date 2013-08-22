@@ -6,6 +6,7 @@
 #include <string>
 
 struct Node {
+    Node() : size(0) {}
     int size;
     std::string stack;
 };
