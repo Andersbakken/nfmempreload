@@ -1,9 +1,11 @@
-#include <stdio.h>
-#include <pthread.h>
 #include <assert.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 static pthread_mutex_t sMutex;
 typedef void * (*OriginalMalloc)(size_t);
@@ -17,28 +19,29 @@ static time_t sLastFileOpen = 0;
 static bool sEnable = true;
 static bool sStarted = false;
 
+static void init()
+{
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&sMutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+    if (!sOriginalMalloc)
+        sOriginalMalloc = reinterpret_cast<OriginalMalloc>(dlsym(RTLD_NEXT, "malloc"));
+    if (!sOriginalRealloc)
+        sOriginalRealloc = reinterpret_cast<OriginalRealloc>(dlsym(RTLD_NEXT, "realloc"));
+    if (!sOriginalFree)
+        sOriginalFree = reinterpret_cast<OriginalFree>(dlsym(RTLD_NEXT, "free"));
+}
+
+static pthread_once_t sOnce = PTHREAD_ONCE_INIT;
+
 class Scope
 {
 public:
     Scope()
     {
-        static pthread_mutex_t sControlMutex = PTHREAD_MUTEX_INITIALIZER;
-        pthread_mutex_lock(&sControlMutex);
-        if (!sStarted) {
-            pthread_mutexattr_t attr;
-            pthread_mutexattr_init(&attr);
-            pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-            pthread_mutex_init(&sMutex, &attr);
-            pthread_mutexattr_destroy(&attr);
-            sStarted = true;
-            if (!sOriginalMalloc)
-                sOriginalMalloc = reinterpret_cast<OriginalMalloc>(dlsym(RTLD_NEXT, "malloc"));
-            if (!sOriginalRealloc)
-                sOriginalRealloc = reinterpret_cast<OriginalRealloc>(dlsym(RTLD_NEXT, "realloc"));
-            if (!sOriginalFree)
-                sOriginalFree = reinterpret_cast<OriginalFree>(dlsym(RTLD_NEXT, "free"));
-        }
-        pthread_mutex_unlock(&sControlMutex);
+        pthread_once(&sOnce, init);
         pthread_mutex_lock(&sMutex);
     }
 
@@ -59,31 +62,45 @@ FILE *file(time_t &time)
             interval = 60;
     }
     time = ::time(0);
-    const time_t t = ::time(0) / interval;
+    const time_t t = time - (time % interval);
     if (t != sLastFileOpen) {
         sLastFileOpen = t;
         if (sFile)
             fclose(sFile);
         static const char *prefix = getenv("NFLD_PREFIX");
         char buf[32];
-        snprintf(buf, sizeof(buf), "%s%ld.malloc", prefix ? prefix : "", t);
+        static const int pid = getpid();
+        snprintf(buf, sizeof(buf), "%s%d_%ld.malloc", prefix ? prefix : "", pid, t);
         sFile = fopen(buf, "w");
     }
     assert(sFile);
     return sFile;
 }
 
-enum { STACK_SIZE = 64 };
-#define DUMP_STACK()                                    \
-    do {                                                \
-        void *stack[STACK_SIZE];                        \
-        const int count = backtrace(stack, STACK_SIZE); \
-        fprintf(f, "[%p", stack[1]);                    \
-        for (int i=2; i<count; ++i)                     \
-            fprintf(f, " %p", stack[i]);                \
-        fprintf(f, "]\n");                              \
+#define DUMP_STACK()                                                    \
+    do {                                                                \
+        static int stackSize = -1;                                      \
+        if (stackSize == -1)                                            \
+            if (const char *env = getenv("NFLD_STACKSIZE"))             \
+                stackSize = atoi(env);                                  \
+        if (stackSize == -1)                                            \
+            stackSize = 30;                                             \
+        if (stackSize) {                                                \
+            void *stack[stackSize];                                     \
+            const int count = backtrace(stack, stackSize);              \
+            fprintf(f, "[%p", stack[1]);                                \
+            for (int i=2; i<count; ++i)                                 \
+                fprintf(f, " %p", stack[i]);                            \
+            fprintf(f, "]\n");                                          \
+            static const bool symbolsEnabled = getenv("NFLD_SYMBOLS");  \
+            if (symbolsEnabled) {                                       \
+                char **symbols = backtrace_symbols(stack, count);       \
+                for (int i=1; i<count; ++i)                             \
+                    fprintf(f, "  %d/%d %s\n", i, count, symbols[i]);   \
+                free(symbols);                                          \
+            }                                                           \
+        }                                                               \
     } while (false)
-
 
 extern "C" {
 void *malloc(size_t size)
